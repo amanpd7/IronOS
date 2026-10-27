@@ -353,9 +353,11 @@
 #define TIP2_RESISTANCE           69 // x10 ohms, TS/SI socket
 #define DUAL_TIP_SOCKETS          1
 #define TIP_SHORT_DETECTION       1
-#define TIP_TYPE_SUPPORT          1 // Support for tips of different types, i.e. resistance
-#define AUTO_TIP_SELECTION        1 // Can auto-select the tip
-#define TIPTYPE_T12               1 // Can manually pick a T12 tip
+#define TIP_SHORT_T12_MARGIN_UV   120 // T12 minus TS/SI raw reading with both bridged: healthy tip ~230-275 uV, heater shorted to the shaft ~10-25 uV
+#define TIP_SHORT_TS_MIN_UV       100 // TS/SI contacts pulled to GND by a T12 shaft read ~20-30 uV
+#define TIP_TYPE_SUPPORT          1   // Support for tips of different types, i.e. resistance
+#define AUTO_TIP_SELECTION        1   // Can auto-select the tip
+#define TIPTYPE_T12               1   // Can manually pick a T12 tip
 #define TIP_CURRENT_LIMIT_CHOP    1
 #define TIP_PWM_SLOWDOWN_1_C      35
 #define TIP_PWM_SLOWDOWN_2_C      45

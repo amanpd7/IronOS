@@ -7,6 +7,7 @@
 #include "Setup.h"
 #include "BSP.h"
 #include "Pins.h"
+#include "TipThermoModel.h"
 #include "history.hpp"
 #include "main.hpp"
 #include <stdint.h>
@@ -129,11 +130,15 @@ uint16_t getADCVin(uint8_t sample) {
 #ifdef TIP2_TEMP_ADC1_CHANNEL
 // Both sets of contacts are read every cycle, an empty one reads close to full scale.
 // A T12 tip also touches the TS/SI contacts, so T12 takes priority and we only switch to TS/SI while idle.
-// If a tip is detected in both sets of contacts, it is likely a short and we mask output and dont allow drive until the short is removed.
+// That makes the TS/SI contacts read a tip with any T12 fitted. It is only treated as a short if the T12 reading is
+// pulled down to about the TS/SI one as well (tip heater shorted to its shaft), or if the TS/SI contacts read near 0
+// with no T12 (a T12 shaft resting on them). Then we mask output and dont allow drive until the short is removed.
 static const uint16_t tipOpenThreshold     = (ADC_MAX_READING * 31) / 32;
 static const uint8_t  tipSwitchSampleCount = 16; // Readings in a row before changing state
 static uint8_t        activeTipChannel     = 0;
 static uint8_t        socketChangeCount    = 0;
+static const uint8_t  tipShortSampleCount  = 4; // Readings in a row before reporting a short (ignores single glitches)
+static uint8_t        shortSetCount        = 0;
 static uint8_t        shortClearCount      = 0;
 static bool           socketPicked         = false;
 static volatile bool  t12SocketHasTip      = false;
@@ -149,15 +154,38 @@ uint16_t getTipRawTemp(uint8_t sample) {
   static history<uint16_t, ADC_FILTER_LEN> filter = {{0}, 0, 0};
   if (sample) {
     uint16_t channelRaw[2];
-    channelRaw[0]   = (uint16_t)((hadc1.Instance->JDR1 + hadc1.Instance->JDR2) << 2);
-    channelRaw[1]   = (uint16_t)((hadc1.Instance->JDR3 + hadc1.Instance->JDR4) << 2);
-    t12SocketHasTip = channelRaw[0] < tipOpenThreshold;
-    if (t12SocketHasTip && channelRaw[1] < tipOpenThreshold) {
-      tipSocketsShorted = true; // Set immediately
-      shortClearCount   = 0;
-    } else if (tipSocketsShorted && ++shortClearCount >= tipSwitchSampleCount) {
-      tipSocketsShorted = false;
-      shortClearCount   = 0;
+    channelRaw[0] = (uint16_t)((hadc1.Instance->JDR1 + hadc1.Instance->JDR2) << 2);
+    channelRaw[1] = (uint16_t)((hadc1.Instance->JDR3 + hadc1.Instance->JDR4) << 2);
+    // Both read exactly 0 until the ADC has done its first conversion after power up; don't judge those
+    if (channelRaw[0] == 0 && channelRaw[1] == 0) {
+      return 0;
+    }
+    t12SocketHasTip           = channelRaw[0] < tipOpenThreshold;
+    const bool tsSocketHasTip = channelRaw[1] < tipOpenThreshold;
+    // Only judged while not heating: right after a heater pulse the T12 reading can briefly drop to about 0, which
+    // would look like a short. A short found at idle keeps blocking once heating is asked for.
+    if (currentTempTargetDegC == 0) {
+      bool shortedNow = false;
+      if (t12SocketHasTip && tsSocketHasTip) {
+        // Compared against the TS/SI reading rather than a fixed level, so op-amp offset drift cancels out
+        const int32_t t12uV = TipThermoModel::convertTipRawADCTouV(channelRaw[0], true);
+        const int32_t tsuV  = TipThermoModel::convertTipRawADCTouV(channelRaw[1], true);
+        shortedNow          = t12uV < tsuV + TIP_SHORT_T12_MARGIN_UV;
+      } else if (tsSocketHasTip) {
+        shortedNow = TipThermoModel::convertTipRawADCTouV(channelRaw[1], true) < TIP_SHORT_TS_MIN_UV;
+      }
+      if (shortedNow) {
+        shortClearCount = 0;
+        if (shortSetCount < tipShortSampleCount && ++shortSetCount >= tipShortSampleCount) {
+          tipSocketsShorted = true;
+        }
+      } else {
+        shortSetCount = 0;
+        if (tipSocketsShorted && ++shortClearCount >= tipSwitchSampleCount) {
+          tipSocketsShorted = false;
+          shortClearCount   = 0;
+        }
+      }
     }
 
     // Keep the current socket if both are empty
